@@ -1,5 +1,8 @@
 #include "esp_system.h"
 
+/**
+ * @brief Create and include your own include/secret.h
+ */
 #include "secret.h"
 
 #include "freertos/FreeRTOS.h"
@@ -59,6 +62,9 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, -25200);
 CRGB leds[NUM_LEDS];
 
+/**
+ * @brief Create and include your own include/secret.h
+ */
 const char *ssid = SSID;
 const char *password = WIFI_PASSWORD;
 const char *hostname = HOSTNAME;
