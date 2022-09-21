@@ -145,6 +145,15 @@ void drawSegment(DigitOffset digit, CRGB rgb)
     }
 }
 
+void drawDots(CRGB rgb)
+{
+    int digitOffsetDots = static_cast<int>(DigitOffset::Dots);
+    for (int i = digitOffsetDots; i < digitOffsetDots + DOTS_COUNT; i++)
+    {
+        leds[i] = CRGB(rgb);
+    }
+}
+
 // A b c d E F g h I j L n o P q r S t u Y
 const WordSegment segA = {"045689abefghlpqsty", &drawSegment<Segment::A>};
 const WordSegment segB = {"02356789aefgjpqs", &drawSegment<Segment::B>};
@@ -156,19 +165,10 @@ const WordSegment segG = {"2345689abcdefghnopqrsty", &drawSegment<Segment::G>};
 
 const WordSegment wordSegments[] = {segA, segB, segC, segD, segE, segF, segG};
 
-void dots(CRGB rgb)
-{
-    int digitOffsetDots = static_cast<int>(DigitOffset::Dots);
-    for (int i = digitOffsetDots; i < digitOffsetDots + DOTS_COUNT; i++)
-    {
-        leds[i] = CRGB(rgb);
-    }
-}
-
 void wrd(String wrd, CRGB rgb)
 {
     if (wrd.length() > 4)
-        return;
+        return; // TODO: create a scrolling word render
 
     for (int i = 0; i < wrd.length(); i++)
     {
@@ -219,7 +219,7 @@ String getTime()
 void drawTime(CRGB rgb)
 {
     wrd(getTime(), rgb);
-    dots(timeClient.getSeconds() % 2 == 0 ? rgb : CRGB::Black);
+    drawDots(timeClient.getSeconds() % 2 == 0 ? rgb : CRGB::Black);
     FastLED.show();
 }
 
