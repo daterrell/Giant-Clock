@@ -16,6 +16,7 @@
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
 #include <NTPClient.h>
+#include <ArduinoMqttClient.h>
 
 #include "FastLED.h"
 
@@ -62,6 +63,9 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, -25200);
 CRGB leds[NUM_LEDS];
 
+WiFiClient wifiClient;
+MqttClient mqttClient(wifiClient);
+
 /**
  * @brief Create and include your own include/secret.h
  */
@@ -69,10 +73,14 @@ const char *ssid = SSID;
 const char *password = WIFI_PASSWORD;
 const char *hostname = HOSTNAME;
 
+const char mqttBroker[] = "192.168.7.80";
+const int mqttPort = 1883;
+const char topic[] = "";
+
 TaskHandle_t PixelHandle;
 TaskHandle_t UpdateHandle;
 
-void wifiLoop(void *param);
+void updateLoop(void *param);
 void pixelLoop(void *param);
 void pixelDraw();
 void arduinoOta();
@@ -84,6 +92,7 @@ bool updating = false;
 void setup()
 {
     delay(3000);
+
     Serial.begin(9600);
     Serial.print("hello, starting now... \n");
     SPIFFS.begin(true);
@@ -95,25 +104,29 @@ void setup()
 
     delay(3000);
 
-    xTaskCreatePinnedToCore(pixelLoop, "Pixels", 10000, NULL, 1, &PixelHandle, 1);
-    xTaskCreatePinnedToCore(wifiLoop, "Update", 10000, NULL, 1, &UpdateHandle, 0);
-}
+    wrd("wifi", CRGB::White);
+    FastLED.show();
 
-void loop() {}
-
-void wifiLoop(void *param)
-{
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
+
     while (WiFi.waitForConnectResult() != WL_CONNECTED)
     {
         Serial.println("Connection Failed! Rebooting...");
         delay(5000);
         ESP.restart();
     }
-
+    
     arduinoOta();
 
+    xTaskCreatePinnedToCore(pixelLoop, "Pixels", 10000, NULL, 1, &PixelHandle, 1);
+    xTaskCreatePinnedToCore(updateLoop, "Update", 10000, NULL, 1, &UpdateHandle, 0);
+}
+
+void loop() {}
+
+void updateLoop(void *param)
+{
     for (;;)
     {
         ArduinoOTA.handle();

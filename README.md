@@ -11,7 +11,7 @@ This is my code to control an ESP32 controller for Ivan Miranda's [Giant Clock](
 - bottom-left - `Segment::F`
 - center - `Segment::G`
 
-If you would like to use this code for your ESP32, please create an `include/secret.h` with proper `#define` for:
+If you would like to use this code for your ESP32, please create an `include/secret.h` with proper `const char*` for:
 - `SSID`
 - `WIFI_PASSWORD`
 - `HOSTNAME`
