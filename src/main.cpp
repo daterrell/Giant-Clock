@@ -17,6 +17,7 @@
 #include <ArduinoOTA.h>
 #include <NTPClient.h>
 #include <ArduinoMqttClient.h>
+#include <ArduinoJson.h>
 
 #include "FastLED.h"
 
@@ -29,6 +30,7 @@ const int SEGMENT_PIXEL_COUNT = 9;
 const int SEGMENT_PER_DIGIT = 7;
 const int DOTS_COUNT = 6;
 const int DIGIT_PIXEL_COUNT = SEGMENT_PIXEL_COUNT * SEGMENT_PER_DIGIT;
+const StaticJsonDocument<2000> mqttMsq;
 
 enum class DigitOffset : int
 {
@@ -73,17 +75,30 @@ const char *ssid = SSID;
 const char *password = WIFI_PASSWORD;
 const char *hostname = HOSTNAME;
 
-const char mqttBroker[] = "192.168.7.80";
+const IPAddress mqttBroker(192, 168, 7, 80);
 const int mqttPort = 1883;
+const char *mqttUser = MQTT_USER;
+const char *mqttPass = MQTT_PASS;
 const char topic[] = "";
 
 TaskHandle_t PixelHandle;
 TaskHandle_t UpdateHandle;
+TaskHandle_t MqttHandle;
 
 void updateLoop(void *param);
+
+void pixelSetup();
 void pixelLoop(void *param);
+
+void mqttSetup();
+void mqttLoop(void *param);
 void pixelDraw();
+
+void wifiSetup();
+
 void arduinoOta();
+void onMqttMessage(int messageSize);
+
 void wrd(String wrd, CRGB rgb);
 void drawTime(CRGB rgb);
 
@@ -97,14 +112,36 @@ void setup()
     Serial.print("hello, starting now... \n");
     SPIFFS.begin(true);
 
+    pixelSetup();
+    wifiSetup();
+
+    // Setup the OTA update ASAP so if something goes wrong from here we can fix it.
+    arduinoOta();
+    mqttSetup();
+
+    xTaskCreatePinnedToCore(updateLoop, "Update", 10000, NULL, 1, &UpdateHandle, 0);
+    xTaskCreatePinnedToCore(mqttLoop, "Mqtt", 10000, NULL, 1, &MqttHandle, 0);
+    xTaskCreatePinnedToCore(pixelLoop, "Pixels", 10000, NULL, 1, &PixelHandle, 1);
+}
+
+void loop() {}
+
+void pixelSetup()
+{
+    Serial.println("pixelSetup");
+
     FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
     FastLED.clear();
     wrd("run", CRGB::White);
     FastLED.show();
-
     delay(3000);
+}
 
-    wrd("wifi", CRGB::White);
+void wifiSetup()
+{
+    Serial.println("wifiSetup");
+
+    wrd("net", CRGB::White);
     FastLED.show();
 
     WiFi.mode(WIFI_STA);
@@ -113,17 +150,39 @@ void setup()
     while (WiFi.waitForConnectResult() != WL_CONNECTED)
     {
         Serial.println("Connection Failed! Rebooting...");
+        wrd("err1", CRGB::White);
+        FastLED.show();
         delay(5000);
         ESP.restart();
     }
-    
-    arduinoOta();
-
-    xTaskCreatePinnedToCore(pixelLoop, "Pixels", 10000, NULL, 1, &PixelHandle, 1);
-    xTaskCreatePinnedToCore(updateLoop, "Update", 10000, NULL, 1, &UpdateHandle, 0);
 }
 
-void loop() {}
+void mqttSetup()
+{
+    Serial.println("mqttSetup");
+
+    wrd("mqtt", CRGB::White);
+    FastLED.show();
+
+    Serial.print("Attempting to connect to the MQTT broker: ");
+    Serial.println(mqttBroker);
+    Serial.println("Setting MQTT user/pass");
+    mqttClient.setUsernamePassword(mqttUser, mqttPass);
+
+    if (!mqttClient.connect(mqttBroker, mqttPort))
+    {
+        Serial.print("MQTT connection failed! Error code = ");
+        Serial.println(mqttClient.connectError());
+        delay(1000);
+        ESP.restart();
+    }
+
+    Serial.println("You're connected to the MQTT broker!");
+
+    mqttClient.onMessage(onMqttMessage);
+
+    mqttClient.subscribe("frigate/events");
+}
 
 void updateLoop(void *param)
 {
@@ -142,6 +201,15 @@ void pixelLoop(void *param)
         drawTime(CRGB(0, 128, 128));
         FastLED.show();
         vTaskDelay(250 / portTICK_PERIOD_MS);
+    }
+}
+
+void mqttLoop(void *param)
+{
+    while (mqttClient.connected())
+    {
+        mqttClient.poll();
+        vTaskDelay(50 / portTICK_PERIOD_MS);
     }
 }
 
@@ -274,4 +342,17 @@ void arduinoOta()
     Serial.println("Ready");
     Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
+}
+
+void onMqttMessage(int messageSize)
+{
+    vTaskSuspend(PixelHandle);
+    vTaskSuspend(UpdateHandle);
+
+    wrd("door", CRGB::White);
+    FastLED.show();
+    delay(500);
+
+    vTaskResume(PixelHandle);
+    vTaskResume(UpdateHandle);
 }
