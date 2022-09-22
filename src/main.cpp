@@ -344,12 +344,43 @@ void arduinoOta()
     Serial.println(WiFi.localIP());
 }
 
+bool isDoorMessage(int length)
+{
+    const size_t capacity = 4 * JSON_ARRAY_SIZE(0) + 4 * JSON_ARRAY_SIZE(4) + JSON_OBJECT_SIZE(3) + 2 * JSON_OBJECT_SIZE(20) + length;
+    DynamicJsonDocument doc(capacity);
+
+    String json = mqttClient.readString();
+    auto error = deserializeJson(doc, json);
+
+    if (error)
+    {
+        Serial.print(F("deserializeJson() failed with code "));
+        Serial.println(error.c_str());
+        return false;
+    }
+
+    return doc["after"]["camera"] == "Front" && doc["type"] == "new";
+}
+
 void onMqttMessage(int messageSize)
 {
+    if (!isDoorMessage(messageSize))
+        return;
+
     vTaskSuspend(PixelHandle);
     vTaskSuspend(UpdateHandle);
 
-    wrd("door", CRGB::White);
+    for (int i = 0; i < 4; i++)
+    {
+        FastLED.clear();
+        FastLED.show();
+        delay(500);
+        wrd("door", CRGB::White);
+        FastLED.show();
+        delay(500);
+    }
+    
+    FastLED.clear();
     FastLED.show();
     delay(500);
 
