@@ -9,6 +9,7 @@
 #include "freertos/task.h"
 #include "freertos/timers.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 
 #include <SPIFFS.h>
 #include <WiFi.h>
@@ -31,6 +32,7 @@ const int SEGMENT_PER_DIGIT = 7;
 const int DOTS_COUNT = 6;
 const int DIGIT_PIXEL_COUNT = SEGMENT_PIXEL_COUNT * SEGMENT_PER_DIGIT;
 const StaticJsonDocument<2000> mqttMsq;
+const SemaphoreHandle_t mqttSem = xSemaphoreCreateMutex();
 
 enum class DigitOffset : int
 {
@@ -97,6 +99,11 @@ void pixelDraw();
 void wifiSetup();
 
 void arduinoOta();
+void arduinoOtaStart();
+void arduinoOtaEnd();
+void arduinoOtaProgress(unsigned int progress, unsigned int total);
+void arduinoOtaError(ota_error_t error);
+
 void onMqttMessage(int messageSize);
 
 void wrd(String wrd, CRGB rgb);
@@ -118,6 +125,9 @@ void setup()
     // Setup the OTA update ASAP so if something goes wrong from here we can fix it.
     arduinoOta();
     mqttSetup();
+
+    if ((mqttSem) != NULL)
+        xSemaphoreGive((mqttSem));
 
     xTaskCreatePinnedToCore(updateLoop, "Update", 10000, NULL, 1, &UpdateHandle, 0);
     xTaskCreatePinnedToCore(mqttLoop, "Mqtt", 10000, NULL, 1, &MqttHandle, 0);
@@ -308,40 +318,58 @@ void arduinoOta()
 {
     ArduinoOTA.setHostname(hostname);
     ArduinoOTA
-        .onStart([]()
-                 {
-        vTaskSuspend(PixelHandle);
-        FastLED.clear();
-        wrd("load", CRGB::White);
-        FastLED.show();
-        vTaskDelay(10 / portTICK_PERIOD_MS);
-      String type;
-      if (ArduinoOTA.getCommand() == U_FLASH)
-        type = "sketch";
-      else // U_SPIFFS
-        type = "filesystem";
-
-      // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
-      Serial.println("Start updating " + type); })
-        .onEnd([]()
-               { Serial.println("\nEnd"); 
-               updating = false; })
-        .onProgress([](unsigned int progress, unsigned int total)
-                    { Serial.printf("Progress: %u%%\r", (progress / (total / 100))); })
-        .onError([](ota_error_t error)
-                 {
-      Serial.printf("Error[%u]: ", error);
-      if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-      else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
-      else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-      else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-      else if (error == OTA_END_ERROR) Serial.println("End Failed"); });
+        .onStart(arduinoOtaStart)
+        .onEnd(arduinoOtaEnd)
+        .onProgress(arduinoOtaProgress)
+        .onError(arduinoOtaError);
 
     ArduinoOTA.begin();
 
     Serial.println("Ready");
     Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
+}
+
+void arduinoOtaStart()
+{
+    vTaskSuspend(PixelHandle);
+    vTaskSuspend(MqttHandle);
+
+    FastLED.clear(true);
+    String type;
+    if (ArduinoOTA.getCommand() == U_FLASH)
+        type = "sketch";
+    else // U_SPIFFS
+        type = "filesystem";
+}
+
+void arduinoOtaEnd()
+{
+    Serial.println("\nEnd");
+    updating = false;
+}
+
+void arduinoOtaProgress(unsigned int progress, unsigned int total)
+{
+    int progressPercent = progress / (total / 100);
+    Serial.printf("Progress: %u%%\r", progressPercent);
+    wrd((String)progressPercent, CRGB::White);
+    FastLED.show();
+}
+
+void arduinoOtaError(ota_error_t error)
+{
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR)
+        Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR)
+        Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR)
+        Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR)
+        Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR)
+        Serial.println("End Failed");
 }
 
 bool isDoorMessage(int length)
@@ -364,25 +392,30 @@ bool isDoorMessage(int length)
 
 void onMqttMessage(int messageSize)
 {
-    if (!isDoorMessage(messageSize))
+    if (xSemaphoreTake(mqttSem, 1) == pdFALSE)
+    {
         return;
+    }
 
     vTaskSuspend(PixelHandle);
     vTaskSuspend(UpdateHandle);
 
+    if (!isDoorMessage(messageSize))
+        return;
+
+    FastLED.clear(true);
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+
     for (int i = 0; i < 4; i++)
     {
-        FastLED.clear();
-        FastLED.show();
-        delay(500);
         wrd("door", CRGB::White);
         FastLED.show();
-        delay(500);
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+        FastLED.clear(true);
+        vTaskDelay(500 / portTICK_PERIOD_MS);
     }
-    
-    FastLED.clear();
-    FastLED.show();
-    delay(500);
+
+    xSemaphoreGive(mqttSem);
 
     vTaskResume(PixelHandle);
     vTaskResume(UpdateHandle);
