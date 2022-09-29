@@ -32,7 +32,7 @@ const int SEGMENT_PER_DIGIT = 7;
 const int DOTS_COUNT = 6;
 const int DIGIT_PIXEL_COUNT = SEGMENT_PIXEL_COUNT * SEGMENT_PER_DIGIT;
 const StaticJsonDocument<2000> mqttMsq;
-const SemaphoreHandle_t mqttSem = xSemaphoreCreateMutex();
+const SemaphoreHandle_t displaySem = xSemaphoreCreateMutex();
 
 enum class DigitOffset : int
 {
@@ -126,8 +126,8 @@ void setup()
     arduinoOta();
     mqttSetup();
 
-    if ((mqttSem) != NULL)
-        xSemaphoreGive((mqttSem));
+    if ((displaySem) != NULL)
+        xSemaphoreGive((displaySem));
 
     xTaskCreatePinnedToCore(updateLoop, "Update", 10000, NULL, 1, &UpdateHandle, 0);
     xTaskCreatePinnedToCore(mqttLoop, "Mqtt", 10000, NULL, 1, &MqttHandle, 0);
@@ -309,9 +309,16 @@ String getTime()
 
 void drawTime(CRGB rgb)
 {
+    if (xSemaphoreTake(displaySem, 500 / portTICK_PERIOD_MS) != pdTRUE)
+    {
+        return;
+    }
+
     wrd(getTime(), rgb);
     drawDots(timeClient.getSeconds() % 2 == 0 ? rgb : CRGB::Black);
     FastLED.show();
+
+    xSemaphoreGive(displaySem);
 }
 
 void arduinoOta()
@@ -332,9 +339,8 @@ void arduinoOta()
 
 void arduinoOtaStart()
 {
-    vTaskSuspend(PixelHandle);
-    vTaskSuspend(MqttHandle);
 
+    while (xSemaphoreTake(displaySem, 0) != pdTRUE) ;
     FastLED.clear(true);
     String type;
     if (ArduinoOTA.getCommand() == U_FLASH)
@@ -392,31 +398,22 @@ bool isDoorMessage(int length)
 
 void onMqttMessage(int messageSize)
 {
-    if (xSemaphoreTake(mqttSem, 1) == pdFALSE)
+    if (xSemaphoreTake(displaySem, 500 / portTICK_PERIOD_MS) != pdTRUE)
     {
         return;
     }
-
-    vTaskSuspend(PixelHandle);
-    vTaskSuspend(UpdateHandle);
 
     if (!isDoorMessage(messageSize))
         return;
 
-    FastLED.clear(true);
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-
     for (int i = 0; i < 4; i++)
     {
+        FastLED.clear(true);
+        vTaskDelay(500 / portTICK_PERIOD_MS);
         wrd("door", CRGB::White);
         FastLED.show();
         vTaskDelay(500 / portTICK_PERIOD_MS);
-        FastLED.clear(true);
-        vTaskDelay(500 / portTICK_PERIOD_MS);
     }
 
-    xSemaphoreGive(mqttSem);
-
-    vTaskResume(PixelHandle);
-    vTaskResume(UpdateHandle);
+    xSemaphoreGive(displaySem);
 }
