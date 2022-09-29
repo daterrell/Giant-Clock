@@ -398,12 +398,10 @@ bool isDoorMessage(int length)
 
 void onMqttMessage(int messageSize)
 {
-    if (xSemaphoreTake(displaySem, 500 / portTICK_PERIOD_MS) != pdTRUE)
-    {
-        return;
-    }
-
     if (!isDoorMessage(messageSize))
+        return;
+
+    if (xSemaphoreTake(displaySem, 500 / portTICK_PERIOD_MS) != pdTRUE)
         return;
 
     for (int i = 0; i < 4; i++)
