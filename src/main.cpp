@@ -14,9 +14,7 @@
 #include <SPIFFS.h>
 #include <WiFi.h>
 #include <ESPmDNS.h>
-#include <WiFiUdp.h>
 #include <ArduinoOTA.h>
-#include <NTPClient.h>
 #include <ArduinoMqttClient.h>
 #include <ArduinoJson.h>
 
@@ -32,7 +30,8 @@ const int SEGMENT_PER_DIGIT = 7;
 const int DOTS_COUNT = 6;
 const int DIGIT_PIXEL_COUNT = SEGMENT_PIXEL_COUNT * SEGMENT_PER_DIGIT;
 const StaticJsonDocument<2000> mqttMsq;
-const SemaphoreHandle_t displaySem = xSemaphoreCreateMutex();
+const SemaphoreHandle_t displaySem = xSemaphoreCreateBinary();
+struct tm timeinfo;
 
 enum class DigitOffset : int
 {
@@ -63,8 +62,6 @@ struct WordSegment
     SegmentFunction segmentFunction;
 };
 
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, -25200);
 CRGB leds[NUM_LEDS];
 
 WiFiClient wifiClient;
@@ -115,9 +112,14 @@ void setup()
 {
     delay(3000);
 
+    configTzTime("PST8PDT,M3.2.0,M11.1.0", "192.168.7.3");
+
     Serial.begin(9600);
     Serial.print("hello, starting now... \n");
     SPIFFS.begin(true);
+
+    if ((displaySem) != NULL)
+        xSemaphoreGive(displaySem);
 
     pixelSetup();
     wifiSetup();
@@ -126,15 +128,29 @@ void setup()
     arduinoOta();
     mqttSetup();
 
-    if ((displaySem) != NULL)
-        xSemaphoreGive((displaySem));
-
     xTaskCreatePinnedToCore(updateLoop, "Update", 10000, NULL, 1, &UpdateHandle, 0);
     xTaskCreatePinnedToCore(mqttLoop, "Mqtt", 10000, NULL, 1, &MqttHandle, 0);
     xTaskCreatePinnedToCore(pixelLoop, "Pixels", 10000, NULL, 1, &PixelHandle, 1);
 }
 
 void loop() {}
+
+template <typename withSem>
+void withSemaphore(withSem f)
+{
+    while (xSemaphoreTake(displaySem, 10) != pdTRUE)
+        ;
+
+    try
+    {
+        f();
+    }
+    catch (const std::exception &e)
+    {
+    }
+
+    xSemaphoreGive(displaySem);
+}
 
 void pixelSetup()
 {
@@ -147,12 +163,14 @@ void pixelSetup()
     delay(3000);
 }
 
+bool wifiConnected()
+{
+    return WiFi.isConnected();
+}
+
 void wifiSetup()
 {
     Serial.println("wifiSetup");
-
-    wrd("net", CRGB::White);
-    FastLED.show();
 
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
@@ -160,9 +178,6 @@ void wifiSetup()
     while (WiFi.waitForConnectResult() != WL_CONNECTED)
     {
         Serial.println("Connection Failed! Rebooting...");
-        wrd("err1", CRGB::White);
-        FastLED.show();
-        delay(5000);
         ESP.restart();
     }
 }
@@ -171,52 +186,123 @@ void mqttSetup()
 {
     Serial.println("mqttSetup");
 
-    wrd("mqtt", CRGB::White);
-    FastLED.show();
-
     Serial.print("Attempting to connect to the MQTT broker: ");
     Serial.println(mqttBroker);
     Serial.println("Setting MQTT user/pass");
     mqttClient.setUsernamePassword(mqttUser, mqttPass);
-
-    if (!mqttClient.connect(mqttBroker, mqttPort))
-    {
-        Serial.print("MQTT connection failed! Error code = ");
-        Serial.println(mqttClient.connectError());
-        delay(1000);
-        ESP.restart();
-    }
-
-    Serial.println("You're connected to the MQTT broker!");
-
-    mqttClient.onMessage(onMqttMessage);
-
-    mqttClient.subscribe("frigate/events");
+    mqttClient.setConnectionTimeout(500);
 }
 
 void updateLoop(void *param)
 {
+    auto lambda = []()
+    { ArduinoOTA.handle(); };
+
     for (;;)
     {
-        ArduinoOTA.handle();
+        withSemaphore(lambda);
         vTaskDelay(50 / portTICK_PERIOD_MS);
     }
+}
+
+void arduinoOtaStart()
+{
+    FastLED.clear(true);
+}
+
+void arduinoOta()
+{
+    ArduinoOTA.setHostname(hostname);
+    ArduinoOTA.setRebootOnSuccess(true);
+    ArduinoOTA
+        .onStart(arduinoOtaStart)
+        .onProgress(arduinoOtaProgress)
+        .onError(arduinoOtaError);
+
+    ArduinoOTA.begin();
+
+    Serial.println("Ready");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+}
+
+void arduinoOtaProgress(unsigned int progress, unsigned int total)
+{
+    int progressPercent = progress / (total / 100);
+    Serial.printf("Progress: %u%%\r", progressPercent);
+    wrd((String)progressPercent, CRGB::White);
+    FastLED.show();
+}
+
+void arduinoOtaError(ota_error_t error)
+{
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR)
+        Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR)
+        Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR)
+        Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR)
+        Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR)
+        Serial.println("End Failed");
 }
 
 void pixelLoop(void *param)
 {
     for (;;)
     {
-        timeClient.update();
         drawTime(CRGB(0, 128, 128));
-        FastLED.show();
         vTaskDelay(250 / portTICK_PERIOD_MS);
     }
 }
 
+void flashQtt()
+{
+    for (int i = 0; i < 4; i++)
+    {
+        FastLED.clear(true);
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+        wrd("que", CRGB::White);
+        FastLED.show();
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+    }
+};
+
+bool mqttConnect()
+{
+    if (mqttClient.connected())
+        return true;
+
+    mqttClient.stop();
+
+    while (!mqttClient.connect(mqttBroker, mqttPort))
+    {
+        Serial.print("MQTT connection failed! Error code = ");
+        Serial.println(mqttClient.connectError());
+
+        withSemaphore(&flashQtt);
+
+        vTaskDelay(60000 / portTICK_PERIOD_MS);
+    }
+
+    Serial.println("You're connected to the MQTT broker!");
+
+    mqttClient.onMessage(onMqttMessage);
+    mqttClient.subscribe("frigate/events");
+
+    return true;
+}
+
 void mqttLoop(void *param)
 {
-    while (mqttClient.connected())
+    if (!wifiConnected())
+    {
+        wifiSetup();
+    }
+
+    while (mqttConnect())
     {
         mqttClient.poll();
         vTaskDelay(50 / portTICK_PERIOD_MS);
@@ -284,8 +370,9 @@ void wrd(String wrd, CRGB rgb)
 
 String formatTime()
 {
-    int hours = timeClient.getHours();
-    int minutes = timeClient.getMinutes();
+    
+    int hours = timeinfo.tm_hour;
+    int minutes = timeinfo.tm_min;
 
     if (hours > 12)
         hours %= 12;
@@ -301,7 +388,7 @@ String formatTime()
 
 String getTime()
 {
-    if (timeClient.isTimeSet())
+     if(getLocalTime(&timeinfo))
         return formatTime();
 
     return "set";
@@ -309,73 +396,14 @@ String getTime()
 
 void drawTime(CRGB rgb)
 {
-    if (xSemaphoreTake(displaySem, 500 / portTICK_PERIOD_MS) != pdTRUE)
+    auto lambda = [&]()
     {
-        return;
-    }
+        wrd(getTime(), rgb);
+        drawDots(timeinfo.tm_sec % 2 == 0 ? rgb : CRGB::Black);
+        FastLED.show();
+    };
 
-    wrd(getTime(), rgb);
-    drawDots(timeClient.getSeconds() % 2 == 0 ? rgb : CRGB::Black);
-    FastLED.show();
-
-    xSemaphoreGive(displaySem);
-}
-
-void arduinoOta()
-{
-    ArduinoOTA.setHostname(hostname);
-    ArduinoOTA
-        .onStart(arduinoOtaStart)
-        .onEnd(arduinoOtaEnd)
-        .onProgress(arduinoOtaProgress)
-        .onError(arduinoOtaError);
-
-    ArduinoOTA.begin();
-
-    Serial.println("Ready");
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-}
-
-void arduinoOtaStart()
-{
-
-    while (xSemaphoreTake(displaySem, 0) != pdTRUE) ;
-    FastLED.clear(true);
-    String type;
-    if (ArduinoOTA.getCommand() == U_FLASH)
-        type = "sketch";
-    else // U_SPIFFS
-        type = "filesystem";
-}
-
-void arduinoOtaEnd()
-{
-    Serial.println("\nEnd");
-    updating = false;
-}
-
-void arduinoOtaProgress(unsigned int progress, unsigned int total)
-{
-    int progressPercent = progress / (total / 100);
-    Serial.printf("Progress: %u%%\r", progressPercent);
-    wrd((String)progressPercent, CRGB::White);
-    FastLED.show();
-}
-
-void arduinoOtaError(ota_error_t error)
-{
-    Serial.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR)
-        Serial.println("Auth Failed");
-    else if (error == OTA_BEGIN_ERROR)
-        Serial.println("Begin Failed");
-    else if (error == OTA_CONNECT_ERROR)
-        Serial.println("Connect Failed");
-    else if (error == OTA_RECEIVE_ERROR)
-        Serial.println("Receive Failed");
-    else if (error == OTA_END_ERROR)
-        Serial.println("End Failed");
+    withSemaphore(lambda);
 }
 
 bool isDoorMessage(int length)
@@ -401,17 +429,17 @@ void onMqttMessage(int messageSize)
     if (!isDoorMessage(messageSize))
         return;
 
-    if (xSemaphoreTake(displaySem, 500 / portTICK_PERIOD_MS) != pdTRUE)
-        return;
-
-    for (int i = 0; i < 4; i++)
+    auto lambda = []()
     {
-        FastLED.clear(true);
-        vTaskDelay(500 / portTICK_PERIOD_MS);
-        wrd("door", CRGB::White);
-        FastLED.show();
-        vTaskDelay(500 / portTICK_PERIOD_MS);
-    }
+        for (int i = 0; i < 4; i++)
+        {
+            FastLED.clear(true);
+            vTaskDelay(500 / portTICK_PERIOD_MS);
+            wrd("door", CRGB::White);
+            FastLED.show();
+            vTaskDelay(500 / portTICK_PERIOD_MS);
+        }
+    };
 
-    xSemaphoreGive(displaySem);
+    withSemaphore(lambda);
 }
